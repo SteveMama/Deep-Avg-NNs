@@ -33,6 +33,10 @@ def _parse_args():
     parser.add_argument('--num_epochs', type=int, default=10, help='number of epochs to train for')
     parser.add_argument('--hidden_size', type=int, default=100, help='hidden layer size')
     parser.add_argument('--batch_size', type=int, default=1, help='training batch size; 1 by default and you do not need to batch unless you want to')
+    parser.add_argument('--random_init', type=bool, default=False, help='helps random initialisation of embedding layer if set true')
+    parser.add_argument('--embedding_dim', type=int, default=100, help='helps random initialisation of embedding layer if set true')
+
+
     args = parser.parse_args()
     return args
 
