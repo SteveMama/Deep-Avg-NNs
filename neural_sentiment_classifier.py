@@ -35,10 +35,8 @@ def _parse_args():
     parser.add_argument('--batch_size', type=int, default=1, help='training batch size; 1 by default and you do not need to batch unless you want to')
     parser.add_argument('--random_init', type=bool, default=False, help='helps random initialisation of embedding layer if set true')
     parser.add_argument('--embedding_dim', type=int, default=100, help='helps random initialisation of embedding layer if set true')
-
-
-    args = parser.parse_args()
-    return args
+    parser.add_argument('--device', type=str, default='cpu', help='Device to run the model on (cpu or cuda)')
+    return parser.parse_args()
 
 
 def evaluate(classifier, exs):
@@ -85,8 +83,16 @@ def print_evaluation(golds: List[int], predictions: List[int]):
     prec = float(num_pos_correct) / num_pred if num_pred > 0 else 0.0
     rec = float(num_pos_correct) / num_gold if num_gold > 0 else 0.0
     f1 = 2 * prec * rec / (prec + rec) if prec > 0 and rec > 0 else 0.0
-    output_str += ";\nPrecision (fraction of predicted positives that are correct): %i / %i = %f" % (num_pos_correct, num_pred, prec)
-    output_str += ";\nRecall (fraction of true positives predicted correctly): %i / %i = %f" % (num_pos_correct, num_gold, rec)
+    output_str += ";\nPrecision (fraction of predicted positives that are correct): %i / %i = %f" % (
+        num_pos_correct,
+        num_pred,
+        prec,
+    )
+    output_str += ";\nRecall (fraction of true positives predicted correctly): %i / %i = %f" % (
+        num_pos_correct,
+        num_gold,
+        rec,
+    )
     output_str += ";\nF1 (harmonic mean of precision and recall): %f;\n" % f1
     print(output_str)
     return acc, f1, output_str
@@ -94,36 +100,75 @@ def print_evaluation(golds: List[int], predictions: List[int]):
 
 if __name__ == '__main__':
     args = _parse_args()
-    print(args)
+    device = torch.device(args.device if torch.cuda.is_available() and args.device == 'cuda' else 'cpu')
+    args.device = device  # Add device to args
+    print(f"Using device: {args.device}")
 
     # Load train, dev, and test exs and index the words.
     train_exs = read_sentiment_examples(args.train_path)
     dev_exs = read_sentiment_examples(args.dev_path)
     test_exs = read_blind_sst_examples(args.blind_test_path)
-    print(repr(len(train_exs)) + " / " + repr(len(dev_exs)) + " / " + repr(len(test_exs)) + " train/dev/test examples")
+    print(
+        repr(len(train_exs))
+        + " / "
+        + repr(len(dev_exs))
+        + " / "
+        + repr(len(test_exs))
+        + " train/dev/test examples"
+    )
 
     word_embeddings = read_word_embeddings(args.word_vecs_path)
+
+    # Define filter configurations: List of (filter_size, num_filters)
+    configurations = [
+        (3, 100),
+        (4, 150),
+        (5, 200),
+    ]
 
     # Train and evaluate
     start_time = time.time()
     if args.model == "DAN":
         model = train_deep_averaging_network(args, train_exs, dev_exs, word_embeddings)
+        # For DAN, no need to handle multiple configurations
+        models_dict = {"DAN": model}
     elif args.model == "CNN":
-        model = train_CNN(args, train_exs, dev_exs, word_embeddings)
+        # Train CNN models with multiple configurations
+        models_dict = train_CNN(args, train_exs, dev_exs, word_embeddings, configurations)
     else:
         model = TrivialSentimentClassifier()
-    print("=====Train Accuracy=====")
-    train_acc, train_f1, train_out = evaluate(model, train_exs)
-    print("=====Dev Accuracy=====")
-    dev_acc, dev_f1, dev_out = evaluate(model, dev_exs)
+        models_dict = {"Trivial": model}
+    print("=====Training and Evaluation Completed=====")
     train_eval_time = time.time() - start_time
     print("Time for training and evaluation: %.2f seconds" % train_eval_time)
 
-    # Write the test set output
-    if args.run_on_test:
-        test_exs_predicted = [SentimentExample(words, model.predict(words)) for words in test_exs]
-        write_sentiment_examples(test_exs_predicted, args.test_output_path)
+    # Evaluate each trained model on train and dev sets
+    results = {}
+    for config_id, model_obj in models_dict.items():
+        print(f"\n=====Evaluating {config_id} on Training Set=====")
+        train_acc, train_f1, train_out = evaluate(model_obj, train_exs)
+        print(f"=====Evaluating {config_id} on Dev Set=====")
+        dev_acc, dev_f1, dev_out = evaluate(model_obj, dev_exs)
+        results[config_id] = {
+            "train_acc": train_acc,
+            "train_f1": train_f1,
+            "dev_acc": dev_acc,
+            "dev_f1": dev_f1,
+            "execution_time": train_eval_time,
+            "output": train_out + "\n" + dev_out,
+        }
 
-    data = {'dev_acc': dev_acc, 'dev_f1': dev_f1, 'execution_time': train_eval_time, 'output': dev_out}
-    print("=====Results=====")
-    print(json.dumps(data, indent=2))
+    # Write the test set output for each model if required
+    if args.run_on_test:
+        for config_id, model_obj in models_dict.items():
+            test_exs_predicted = [
+                SentimentExample(words, model_obj.predict(words)) for words in test_exs
+            ]
+            # Modify the output path to include the configuration ID
+            test_output_path = args.test_output_path.replace(".txt", f"_{config_id}.txt")
+            write_sentiment_examples(test_exs_predicted, test_output_path)
+            print(f"Test predictions for {config_id} written to {test_output_path}")
+
+    # Print all results
+    print("\n=====All Results=====")
+    print(json.dumps(results, indent=2))
